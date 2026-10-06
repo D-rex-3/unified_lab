@@ -1,0 +1,83 @@
+Task 1: Standardisation
+
+1. Why train-only µ and σ?
+The test set stands in for data you haven't seen yet. In real use you wouldn't have its mean and sd when you predict, so the model can only use numbers learned from training. Using the test set's own statistics leaks information about it and makes the test score look better than it should. It's the same rule as the imputation medians in Lab 2.
+
+2. Why is test std not exactly 1?
+The test rows are scaled with the training µ and σ, and the test sample has its own spread, so you get values like 0.905 or 1.025. If the test std were exactly 1.000 everywhere, you standardised the test set with its own statistics, which is the leakage from question 1.
+
+3. Why standardise before adding the column of ones?
+A column of ones has σ = 0, so standardising it computes 0/0 and fills the array with nan. The intercept isn't a feature either, so it shouldn't be scaled.
+
+4. Why leave rent alone?
+So RMSE stays in thousands of rupees and means something. Standardising y would still fit fine, but you'd have to convert every prediction and error back to rupees.
+
+5. What does axis=0 do?
+It computes the statistic down the rows, one value per column, so you get 13 means and 13 sds. Without it you get a single number for the whole array, which mixes all the columns together and is wrong.
+
+6. Why are the noise_id and noise_tiny1 coefficients so different?
+What matters is coefficient × column sd, because that is how much the feature moves the prediction. noise_id has sd 1620, so a tiny coefficient is enough. noise_tiny1 has sd 0.056, so it needs a huge one. Check: 0.0004 × 1620 ≈ 0.65 and 11.22 × 0.056 ≈ 0.63, so the effect sizes are about equal. After standardising, every coefficient means "rent per one sd of the feature", so the coefficients are directly comparable and a penalty treats the columns fairly.
+
+7. Does standardising change OLS predictions?
+No. Each standardised column is just a shifted and rescaled copy of the raw one, and the intercept absorbs the shifts. The fitted values are identical and only the coefficients change. That's what H1 checks. For ridge it does matter, because the penalty depends on coefficient size, which depends on units.
+
+Task 2: Ridge
+
+1. The formula and its shape
+θ̂ = (AᵀA + λP)⁻¹ Aᵀy, where P is the identity with P[0,0] = 0. With 13 features plus the intercept, the matrix is 14 × 14.
+
+2. Why is the intercept exempt?
+It is the overall level of the prediction, not a feature weight. Penalising it would drag every prediction towards a rent of 0 as λ grows, and 0 is meaningless here. Left unpenalised on standardised features, the intercept is just the mean of the training rents.
+
+3. How do you exempt it in code?
+
+python
+P = np.eye(A.shape[1])
+P[0, 0] = 0
+theta = np.linalg.solve(A.T @ A + lam * P, A.T @ y)
+
+You can't drop a row, because the matrix has to stay 14 × 14 to match AᵀA. The intercept still takes part in the fit, it just isn't charged.
+
+4. What should λ = 0 give?
+Plain OLS on the standardised features, which is the same as fit_normal_equation(Z_train, y_train). Check it with np.allclose. If it fails, your penalty matrix is wrong.
+
+5. How many exact zeros, and why does ridge never produce them?
+Check your own table. Ridge should give 0 exact zeros at every λ. The ridge penalty's pull is proportional to the coefficient (2λθ), so it gets weaker as θ gets small. The data term wins before θ hits 0, so coefficients shrink but only reach 0 in the limit λ → ∞. Lasso's pull is a constant λ however small the coefficient is, which is why it can reach exact zero.
+
+6. Do real and noise features shrink differently?
+The usual story is that a real feature has a strong "restoring force" from the data term, because shrinking it costs a lot of error. A noise coefficient mostly reflects fitting 40 noisy rows, so shrinking it costs little and helps generalisation. Be careful how you say this, though. Ridge only dampens noise features, it doesn't remove them, and with only 40 rows individual coefficients can move non-monotonically at moderate λ. Describe what your own table shows rather than a pattern you don't see.
+
+7. What happens as λ → ∞?
+All the feature coefficients go to 0. The intercept goes to ȳ, the mean of the training rents, because it is unpenalised. The model then predicts the same value for everyone, which is the extreme of underfitting.
+
+8. Why solve and not inv?
+Solving the system directly is more stable and cheaper than forming an explicit inverse, as in Lab 4. For invertibility, for any λ > 0 the matrix AᵀA + λP is invertible even when AᵀA alone is singular (more features than rows, or collinear columns). The penalty adds positive weight on the feature directions, and the ones column handles the intercept. With 40 rows and 14 columns, AᵀA is already invertible, but on raw units it is badly conditioned.
+
+Task 3: Cross-validation
+
+1. Why not choose λ from training error?
+OLS (λ = 0) minimises the training squared error by definition, and any penalty makes the training fit worse. So training error always votes for λ = 0, which is the most overfit model.
+
+2. Why not use the test set?
+Then λ would be tuned to those 260 rows, and the final test RMSE would be an optimistic estimate of performance on truly unseen data. The test set must stay untouched until the end.
+
+3. How does np.array_split behave, and how did you verify coverage?
+With 40 rows and k = 5 you get five groups of 8. If n doesn't divide evenly, the group sizes differ by at most one (for example 42 rows gives 9, 9, 8, 8, 8). I verified coverage by concatenating the held-out indices, sorting them, and asserting they equal np.arange(n). That proves each row is held out exactly once.
+
+4. How many models per λ?
+5 models per λ, each trained on 32 rows and validated on 8. Over 8 values of λ that is 40 fits.
+
+5. What's the shape of the CV table?
+It should be roughly U-shaped. Small λ means a flexible model that fits noise (overfitting, the left side). Large λ squeezes real coefficients too (underfitting, the right side), and the error climbs towards the spread of y itself. The minimum sits in between. The left side is usually gentle and the right side steep. Describe your own table.
+
+6. Test RMSE at the chosen λ is slightly worse than at λ = 0. Is that a bug?
+Not necessarily. CV estimates generalisation error from only 40 rows (validation folds of 8), so it is noisy. A small gap between λ = 0 and the best λ is within that noise. The CV models also train on 32 rows rather than 40, which shifts the best λ a little. Only worry if the test RMSE is much worse, which would suggest leakage or a bug.
+
+7. Is standardising before CV a leak?
+Yes, a mild one. µ and σ were computed from all 40 training rows, so each validation fold helped determine its own scaling. The clean fix is to standardise inside each fold: compute µ and σ from the 32 training rows and apply them to the 8 validation rows. It's the same rule as Task 1, applied one level down. The effect is usually small here.
+
+8. Mean of fold RMSEs or pooled RMSE?
+I average the fold RMSEs, which matches "average the error over the held-out parts". Pooled RMSE is √(mean of all squared residuals), which is √(mean of the fold MSEs) when folds are equal-sized. The two differ slightly, because the mean of square roots is at most the square root of the mean. They're almost always very close and usually give the same ranking of λ.
+
+9. Why touch the test set only once?
+Every time you look at the test score and make a decision from it, the test set becomes another validation set. Then the final number is no longer an honest estimate for unseen data.
